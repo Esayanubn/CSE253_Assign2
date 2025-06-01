@@ -1,66 +1,104 @@
-# 音乐生成项目
+# Chord to Melody Generation
 
-这个项目实现了一个基于Transformer的音乐生成模型，可以根据和弦生成对应的旋律。
+This project implements a Transformer-based model for generating melodies from chord progressions. The model is trained on the Lakh Pianoroll Dataset (LPD) and can generate melodies that follow the harmonic structure of the input chords.
 
-## 项目结构
+## Dataset
+
+We use the Lakh Pianoroll Dataset (LPD-5), which contains 174,154 multitrack pianorolls derived from the Lakh MIDI Dataset. The tracks are merged into five common categories: Drums, Piano, Guitar, Bass, and Strings.
+
+Dataset download link: [Lakh Pianoroll Dataset](https://hermandong.com/lakh-pianoroll-dataset/dataset.html)
+
+## Project Structure
 
 ```
 Assign2/
-├── data/               # 数据文件夹
-│   ├── raw/           # 原始MIDI文件
-│   └── processed/     # 处理后的数据
-├── models/            # 保存训练好的模型
-├── src/              # 源代码
-│   ├── data/         # 数据处理相关代码
-│   ├── models/       # 模型定义
-│   └── utils/        # 工具函数
-├── utils/            # 通用工具函数
-├── notebooks/        # Jupyter notebooks
-├── requirements.txt  # 项目依赖
-└── README.md        # 项目说明
+├── data/
+│   ├── raw/          # Raw LPD dataset
+│   └── processed/    # Processed data for training
+├── models/           # Saved model checkpoints
+├── notebooks/        # Jupyter notebooks for analysis
+├── src/
+│   ├── data/         # Data processing scripts
+│   ├── models/       # Model architecture
+│   └── utils/        # Utility functions
+└── utils/            # Additional utilities
 ```
 
-## 安装
+## Setup
 
-1. 创建虚拟环境（推荐）：
+1. Create a virtual environment:
 ```bash
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-.\venv\Scripts\activate  # Windows
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-2. 安装依赖：
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用方法
-
-1. 数据准备：
+3. Download and prepare the dataset:
 ```bash
 python src/data/prepare_data.py
 ```
 
-2. 训练模型：
+## Training
+
+To train the model:
 ```bash
 python src/train.py
 ```
 
-3. 生成音乐：
+Training parameters can be adjusted in `src/train.py`:
+- Batch size: 16
+- Sequence length: 32
+- Number of epochs: 100
+- Learning rate: 0.0005
+
+## Model Architecture
+
+The model uses a Transformer architecture with:
+- Encoder-decoder structure
+- Multi-head attention
+- Positional encoding
+- Dropout for regularization
+
+## Data Processing
+
+The data processing pipeline:
+1. Downloads and extracts the LPD-5 dataset
+2. Processes MIDI files to extract chord and melody sequences
+3. Converts musical elements to numerical representations
+4. Creates training and validation sets
+
+## Generation
+
+To generate melodies from chords:
 ```bash
 python src/generate.py
 ```
 
-## 项目特点
+## Results
 
-- 基于Transformer架构
-- 支持和弦到旋律的生成
-- 使用MAESTRO数据集
-- 包含完整的训练和生成流程
+The model generates melodies that:
+- Follow the harmonic structure of input chords
+- Maintain musical coherence
+- Exhibit natural melodic progression
 
-## 注意事项
+## Requirements
 
-- 确保有足够的磁盘空间存储数据集
-- 推荐使用GPU进行训练
-- 可以根据需要调整模型参数 
+- Python 3.8+
+- PyTorch 1.7.0+
+- NumPy 1.19.0+
+- pypianoroll 0.5.0+
+- Other dependencies listed in requirements.txt
+
+## License
+
+This project is for educational purposes only.
+
+## References
+
+- [Lakh Pianoroll Dataset](https://hermandong.com/lakh-pianoroll-dataset/dataset.html)
+- [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
+- [Music Transformer](https://arxiv.org/abs/1809.04281) 
