@@ -58,7 +58,6 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
     best_val_loss = float('inf')
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     
-    # Record training process
     train_losses = []
     val_losses = []
     
@@ -73,6 +72,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
             optimizer.zero_grad()
             output = model(chord_sequence, melody_sequence)
             
+            # Calculate loss for each time step
             loss = criterion(output.view(-1, output.size(-1)), melody_sequence.view(-1))
             loss.backward()
             
@@ -163,7 +163,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
     
-    # Create model with batch_first=True
+    # Create model
     model = ChordToMelodyTransformer(vocab_size=128, batch_first=True).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()

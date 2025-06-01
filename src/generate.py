@@ -5,7 +5,7 @@ from pathlib import Path
 from models.transformer import ChordToMelodyTransformer
 import music21
 
-def generate_melody(model, chord_sequence, max_length=128, temperature=1.0, device='cuda'):
+def generate_melody(model, chord_sequence, max_length=32, temperature=1.0, device='cpu'):
     """根据和弦序列生成旋律"""
     model.eval()
     with torch.no_grad():
@@ -13,20 +13,19 @@ def generate_melody(model, chord_sequence, max_length=128, temperature=1.0, devi
         chord_sequence = torch.tensor(chord_sequence).unsqueeze(0).to(device)
         
         # 生成旋律
-        generated = []
-        current_input = chord_sequence
+        generated = torch.zeros((1, 1), dtype=torch.long, device=device)
         
-        for _ in range(max_length):
-            output = model(current_input, max_len=current_input.size(1) + 1)
+        for _ in range(max_length - 1):
+            # 获取模型输出
+            output = model(chord_sequence, generated)
             next_note = output[:, -1, :] / temperature
             next_note = torch.softmax(next_note, dim=-1)
             next_note = torch.multinomial(next_note, 1)
-            generated.append(next_note.item())
             
-            # 更新输入
-            current_input = torch.cat([current_input, next_note], dim=1)
+            # 更新生成序列
+            generated = torch.cat([generated, next_note], dim=1)
         
-        return generated
+        return generated[0].cpu().numpy()
 
 def play_generated_melody(melody_sequence, output_path='generated_melody.mid', tempo=120):
     """将生成的旋律转换为MIDI并保存"""
@@ -59,52 +58,49 @@ def main():
     
     # 加载模型
     model = ChordToMelodyTransformer(vocab_size=128).to(DEVICE)
-    checkpoint = torch.load(MODEL_PATH)
+    checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    # 示例和弦序列
-    # C大三和弦
-    c_major = music21.chord.Chord(['C4', 'E4', 'G4'])
-    # G属七和弦
-    g7 = music21.chord.Chord(['G4', 'B4', 'D5', 'F5'])
-    # F大三和弦
-    f_major = music21.chord.Chord(['F4', 'A4', 'C5'])
-    
-    # 将和弦转换为序列
-    chord_sequence = [
-        chord_to_sequence(c_major),
-        chord_to_sequence(g7),
-        chord_to_sequence(f_major)
+    # 示例和弦序列（使用MIDI音符编号）
+    chord_sequences = [
+        [60, 64, 67],  # C大三和弦 (C4, E4, G4)
+        [55, 59, 62, 65],  # G7 (G3, B3, D4, F4)
+        [53, 57, 60]   # F大三和弦 (F3, A3, C4)
     ]
     
     # 生成旋律
-    generated_melody = generate_melody(model, chord_sequence, temperature=0.8)
-    
-    # 保存生成的音乐
-    play_generated_melody(generated_melody, tempo=120)
+    for i, chord_seq in enumerate(chord_sequences):
+        print(f"生成第 {i+1} 个和弦序列的旋律...")
+        generated_melody = generate_melody(model, chord_seq, temperature=0.8, device=DEVICE)
+        
+        # 保存生成的音乐
+        output_path = f'generated_melody_{i+1}.mid'
+        play_generated_melody(generated_melody, output_path=output_path, tempo=120)
 
 def chord_to_sequence(chord):
     """将和弦转换为数值序列"""
-    # 获取和弦的根音
-    root = chord.root().midi
+    # 获取和弦的根音（MIDI音符编号）
+    root = min(chord)
     # 计算和弦类型
-    chord_type = get_chord_type(chord)
-    return root * 10 + chord_type
+    intervals = [pitch - root for pitch in chord]
+    chord_type = get_chord_type(intervals)
+    return root
 
-def get_chord_type(chord):
-    """获取和弦类型"""
-    if len(chord.pitches) == 3:
-        if chord.isMajorTriad():
+def get_chord_type(intervals):
+    """根据音程判断和弦类型"""
+    intervals = sorted(intervals)
+    if len(intervals) == 3:
+        if intervals == [0, 4, 7]:
             return 1  # 大三和弦
-        elif chord.isMinorTriad():
+        elif intervals == [0, 3, 7]:
             return 2  # 小三和弦
-    elif len(chord.pitches) == 4:
-        if chord.isDominantSeventh():
-            return 3  # 属七和弦
-        elif chord.isMajorSeventh():
-            return 4  # 大七和弦
-        elif chord.isMinorSeventh():
-            return 5  # 小七和弦
+    elif len(intervals) == 4:
+        if intervals == [0, 4, 7, 11]:
+            return 3  # 大七和弦
+        elif intervals == [0, 3, 7, 10]:
+            return 4  # 小七和弦
+        elif intervals == [0, 4, 7, 10]:
+            return 5  # 属七和弦
     return 0  # 其他类型
 
 if __name__ == "__main__":

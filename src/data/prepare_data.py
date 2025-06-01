@@ -28,8 +28,6 @@ def process_lpd_files():
             
             # Get piano track (index 1 in LPD-5)
             piano_track = pianoroll.tracks[1]
-            
-            # Convert to binary (note on/off)
             piano_track.binarize()
             
             # Get chord track (index 2 in LPD-5)
@@ -40,31 +38,38 @@ def process_lpd_files():
                 if i + 32 > len(piano_track):  # Only process complete sequences
                     break
                     
-                # Extract melody (piano track)
+                # Extract melody and chord for this bar
                 melody = piano_track[i:i+32]
-                if not melody.any():  # Skip empty sequences
-                    continue
-                
-                # Extract chord
                 chord = chord_track[i:i+32]
-                if not chord.any():  # Skip sequences without chords
+                
+                if not melody.any() or not chord.any():  # Skip empty sequences
                     continue
                 
-                # Convert to sequences
-                melody_seq = melody.nonzero()[1]  # Get note indices
-                chord_seq = chord.nonzero()[1]    # Get chord indices
+                # Process each time step
+                melody_seq = []
+                chord_seq = []
+                
+                for t in range(32):
+                    # Get melody note at current time step
+                    melody_notes = melody[t].nonzero()[0]
+                    if len(melody_notes) > 0:
+                        melody_seq.append(melody_notes[0].item())  # Take highest note
+                    else:
+                        melody_seq.append(0)  # Rest
+                    
+                    # Get chord at current time step
+                    chord_notes = chord[t].nonzero()[0]
+                    if len(chord_notes) > 0:
+                        chord_seq.append(chord_notes[0].item())  # Take root note
+                    else:
+                        chord_seq.append(0)  # No chord
                 
                 # Ensure sequences are within vocabulary size
-                if melody_seq.max() >= 128 or chord_seq.max() >= 128:
+                if max(melody_seq) >= 128 or max(chord_seq) >= 128:
                     continue
                 
-                # Convert to lists and ensure consistent length
-                melody_seq = melody_seq.tolist()
-                chord_seq = chord_seq.tolist()
-                
-                if len(melody_seq) == 32 and len(chord_seq) == 32:
-                    chord_sequences.append(chord_seq)
-                    melody_sequences.append(melody_seq)
+                chord_sequences.append(chord_seq)
+                melody_sequences.append(melody_seq)
             
             processed_files += 1
             
