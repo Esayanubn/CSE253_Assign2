@@ -8,105 +8,91 @@ import requests
 import tarfile
 import json
 
-def download_lpd_dataset():
-    """下载LPD数据集的一个子集"""
-    data_dir = Path("data/raw")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 使用LPD-5数据集（5个轨道的子集）
-    url = "http://hog.ee.columbia.edu/craffel/lmd/lpd_5.tar.gz"
-    tar_path = data_dir / "lpd_5.tar.gz"
-    
-    if not tar_path.exists():
-        print("下载LPD-5数据集...")
-        response = requests.get(url, stream=True)
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(tar_path, 'wb') as f:
-            with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
-                for data in response.iter_content(chunk_size=8192):
-                    f.write(data)
-                    pbar.update(len(data))
-    
-    # 解压数据集
-    if not (data_dir / "lpd_5").exists():
-        print("解压数据集...")
-        with tarfile.open(tar_path, 'r:gz') as tar_ref:
-            tar_ref.extractall(data_dir)
 
 def process_lpd_files():
-    """处理LPD文件，提取和弦和旋律"""
-    data_dir = Path("data")
-    processed_dir = data_dir / "processed"
-    processed_dir.mkdir(exist_ok=True)
-    
-    lpd_dir = data_dir / "raw/lpd_5/lpd_5_full/0"
+    """Process LPD files to extract chord and melody sequences"""
+    lpd_dir = Path("data/raw/lpd_5/lpd_5_full/0")
+    if not lpd_dir.exists():
+        print("Error: LPD dataset not found. Please download it first.")
+        return
     
     chord_sequences = []
     melody_sequences = []
+    processed_files = 0
     
-    print("处理LPD文件...")
+    # Process each .npz file
     for npz_file in tqdm(list(lpd_dir.glob("**/*.npz"))):
         try:
-            # 加载pianoroll数据
-            multitrack = pypianoroll.load(str(npz_file))
+            # Load the pianoroll
+            pianoroll = pypianoroll.load(npz_file)
             
-            # 获取钢琴轨道（通常包含和弦和旋律）
-            piano_track = None
-            for track in multitrack.tracks:
-                if track.program == 0 and not track.is_drum:  # 钢琴音色
-                    piano_track = track
+            # Get piano track (index 1 in LPD-5)
+            piano_track = pianoroll.tracks[1]
+            
+            # Convert to binary (note on/off)
+            piano_track.binarize()
+            
+            # Get chord track (index 2 in LPD-5)
+            chord_track = pianoroll.tracks[2]
+            
+            # Process each bar
+            for i in range(0, len(piano_track), 16):  # 16 time steps per bar
+                if i + 32 > len(piano_track):  # Only process complete sequences
                     break
-            
-            if piano_track is None:
-                continue
-            
-            # 将pianoroll转换为音符序列
-            piano_roll = piano_track.pianoroll
-            notes = []
-            for time_step in range(piano_roll.shape[0]):
-                active_notes = np.where(piano_roll[time_step] > 0)[0]
-                if len(active_notes) > 0:
-                    notes.append(active_notes.tolist())
-            
-            if len(notes) >= 32:  # 确保序列长度足够
-                # 提取和弦和旋律
-                chords = []
-                melody = []
+                    
+                # Extract melody (piano track)
+                melody = piano_track[i:i+32]
+                if not melody.any():  # Skip empty sequences
+                    continue
                 
-                for note_group in notes:
-                    if len(note_group) >= 3:  # 可能是和弦
-                        chords.append(note_group)
-                    else:  # 可能是旋律音符
-                        melody.append(note_group[0] if note_group else 0)
+                # Extract chord
+                chord = chord_track[i:i+32]
+                if not chord.any():  # Skip sequences without chords
+                    continue
                 
-                if chords and melody:
-                    # 确保序列长度一致
-                    min_length = min(len(chords), len(melody))
-                    if min_length >= 32:
-                        chord_sequence = [chord_to_sequence(chord) for chord in chords[:min_length]]
-                        melody_sequence = melody[:min_length]
-                        
-                        chord_sequences.append(chord_sequence)
-                        melody_sequences.append(melody_sequence)
-        
+                # Convert to sequences
+                melody_seq = melody.nonzero()[1]  # Get note indices
+                chord_seq = chord.nonzero()[1]    # Get chord indices
+                
+                # Ensure sequences are within vocabulary size
+                if melody_seq.max() >= 128 or chord_seq.max() >= 128:
+                    continue
+                
+                # Convert to lists and ensure consistent length
+                melody_seq = melody_seq.tolist()
+                chord_seq = chord_seq.tolist()
+                
+                if len(melody_seq) == 32 and len(chord_seq) == 32:
+                    chord_sequences.append(chord_seq)
+                    melody_sequences.append(melody_seq)
+            
+            processed_files += 1
+            
         except Exception as e:
-            print(f"处理文件 {npz_file} 时出错: {e}")
+            print(f"Error processing {npz_file}: {str(e)}")
+            continue
     
-    if not chord_sequences:
-        print("警告：没有找到有效的和弦和旋律对！")
-        print("请检查LPD数据集是否正确解压到data/raw/lpd_5目录")
+    print(f"Processed {processed_files} files")
+    print(f"Total sequences: {len(chord_sequences)}")
+    
+    if len(chord_sequences) == 0:
+        print("Warning: No valid sequences found!")
         return
     
-    # 保存处理后的数据
+    # Convert to tensors
+    chord_sequences = torch.tensor(chord_sequences, dtype=torch.long)
+    melody_sequences = torch.tensor(melody_sequences, dtype=torch.long)
+    
+    # Save processed data
+    processed_dir = Path("data/processed")
+    processed_dir.mkdir(exist_ok=True)
+    
     torch.save({
         'chord_sequences': chord_sequences,
         'melody_sequences': melody_sequences
     }, processed_dir / "processed_data.pt")
     
-    print(f"处理了 {len(chord_sequences)} 个文件")
-    print(f"总序列数: {sum(len(seq) for seq in chord_sequences)}")
-    print(f"平均序列长度: {np.mean([len(seq) for seq in chord_sequences]):.2f}")
+    print(f"Average sequence length: {len(chord_sequences[0])}")
 
 def chord_to_sequence(chord):
     """将和弦转换为数值序列"""
