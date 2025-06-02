@@ -180,22 +180,22 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
         print(f'Average validation loss: {avg_val_loss:.4f}')
         
         # Generate MIDI samples every 5 epochs
-        if (epoch + 1) % 5 == 0 and metadata is not None:
-            try:
-                print(f"\n🎼 Generating MIDI samples at epoch {epoch+1}...")
-                save_training_samples(
-                    model=model,
-                    train_loader=train_loader,
-                    metadata=metadata,
-                    device=device,
-                    output_dir=output_dir,
-                    epoch=epoch+1,
-                    num_samples=5
-                )
-            except Exception as e:
-                print(f"Error generating MIDI samples: {e}")
-                import traceback
-                traceback.print_exc()
+        # if (epoch + 1) % 5 == 0 and metadata is not None:
+        try:
+            print(f"\n🎼 Generating MIDI samples at epoch {epoch+1}...")
+            save_training_samples(
+                model=model,
+                train_loader=train_loader,
+                metadata=metadata,
+                device=device,
+                output_dir=output_dir,
+                epoch=epoch+1,
+                num_samples=5
+            )
+        except Exception as e:
+            print(f"Error generating MIDI samples: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Save best model
         if avg_val_loss < best_val_loss:
