@@ -3,30 +3,43 @@ import numpy as np
 from pathlib import Path
 from models.transformer import ChordToMelodyTransformer
 from utils.midi_utils import notes_to_midi, create_combined_midi
+from config import *
 import random
 
 def load_model_and_metadata(model_path='models/best_model.pth'):
     """Load trained model and metadata"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Load metadata
+    # Load metadata (try long sequence metadata first)
     try:
-        metadata = torch.load('data/processed/metadata.pt', weights_only=True)
+        metadata = torch.load('data/processed/metadata_long.pt', weights_only=True)
         num_chords = metadata['num_chords']
         chord_to_id = metadata['chord_to_id']
         id_to_chord = metadata['id_to_chord']
+        print("Loaded long sequence metadata")
     except FileNotFoundError:
-        print("Warning: metadata.pt not found, using default values")
-        num_chords = 49
-        chord_to_id = {}
-        id_to_chord = {}
+        try:
+            metadata = torch.load('data/processed/metadata.pt', weights_only=True)
+            num_chords = metadata['num_chords']
+            chord_to_id = metadata['chord_to_id']
+            id_to_chord = metadata['id_to_chord']
+            print("Loaded short sequence metadata")
+        except FileNotFoundError:
+            print("Warning: No metadata found, using default values")
+            num_chords = CHORD_VOCAB_SIZE
+            chord_to_id = {}
+            id_to_chord = {}
     
-    # Load model
+    # Load model using config values
     model = ChordToMelodyTransformer(
-        vocab_size=128,
+        vocab_size=VOCAB_SIZE,
         chord_vocab_size=num_chords,
-        d_model=256,
-        nhead=8
+        d_model=D_MODEL,
+        nhead=NHEAD,
+        num_encoder_layers=NUM_ENCODER_LAYERS,
+        num_decoder_layers=NUM_DECODER_LAYERS,
+        dim_feedforward=DIM_FEEDFORWARD,
+        dropout=DROPOUT
     ).to(device)
     
     if Path(model_path).exists():
@@ -40,18 +53,45 @@ def load_model_and_metadata(model_path='models/best_model.pth'):
     
     return model, metadata, device
 
-def generate_melody_from_chord_name(model, chord_name, metadata, device, temperature=0.8):
-    """Generate melody from chord name"""
+def generate_melody_from_chord_name(model, chord_name, metadata, device, temperature=0.8, repeat_count=32):
+    """Generate melody from chord name by creating a repeating chord sequence"""
     chord_to_id = metadata['chord_to_id']
     
     if chord_name in chord_to_id:
         chord_id = chord_to_id[chord_name]
-        melody = model.generate_melody(chord_id, max_length=32, temperature=temperature)
+        
+        # Create a chord sequence by repeating the chord (simulate a progression)
+        chord_sequence = torch.full((SEQUENCE_LENGTH,), chord_id, dtype=torch.long, device=device)
+        
+        melody = model.generate_melody(chord_sequence, temperature=temperature)
         return melody, chord_id
     else:
         available_chords = list(chord_to_id.keys())[:10]  # Show first 10
         print(f"Chord '{chord_name}' not found. Available chords include: {available_chords}")
         return None, None
+
+def create_chord_progression(chord_names, metadata, device):
+    """Create a chord sequence from a progression of chord names"""
+    chord_to_id = metadata['chord_to_id']
+    
+    # Each chord lasts for a certain number of steps
+    steps_per_chord = SEQUENCE_LENGTH // len(chord_names)
+    chord_sequence = []
+    
+    for chord_name in chord_names:
+        if chord_name in chord_to_id:
+            chord_id = chord_to_id[chord_name]
+            chord_sequence.extend([chord_id] * steps_per_chord)
+        else:
+            print(f"Warning: Chord '{chord_name}' not found, using C")
+            chord_id = chord_to_id.get('C', 0)
+            chord_sequence.extend([chord_id] * steps_per_chord)
+    
+    # Pad to full length if needed
+    while len(chord_sequence) < SEQUENCE_LENGTH:
+        chord_sequence.append(chord_sequence[-1])
+    
+    return torch.tensor(chord_sequence[:SEQUENCE_LENGTH], dtype=torch.long, device=device)
 
 def generate_random_samples(model, metadata, device, num_samples=5, temperature=0.8):
     """Generate random melody samples using different chords"""
@@ -64,7 +104,11 @@ def generate_random_samples(model, metadata, device, num_samples=5, temperature=
     
     for chord_id in selected_chord_ids:
         chord_name = id_to_chord[chord_id]
-        melody = model.generate_melody(chord_id, max_length=32, temperature=temperature)
+        
+        # Create chord sequence by repeating the chord
+        chord_sequence = torch.full((SEQUENCE_LENGTH,), chord_id, dtype=torch.long, device=device)
+        
+        melody = model.generate_melody(chord_sequence, temperature=temperature)
         samples.append((chord_id, chord_name, melody))
         print(f"Generated melody for {chord_name} (ID: {chord_id})")
     
