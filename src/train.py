@@ -8,22 +8,25 @@ from pathlib import Path
 import numpy as np
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
+import sys
+
+# Add current directory to path for imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from models.transformer import ChordToMelodyTransformer
 from utils.midi_utils import save_training_samples
+from config import *
 
 class MusicDataset(Dataset):
-    def __init__(self, split='train', sequence_length=32):
+    def __init__(self, split='train'):
         """
-        Initialize dataset with new data format
+        Initialize dataset with new long sequence data format
         Args:
             split: 'train' or 'test'
-            sequence_length: length of sequences (should be 32 based on our data)
         """
-        self.sequence_length = sequence_length
         
-        # Load the appropriate data file
-        data_path = f"data/processed/{split}_data.pt"
+        # Load the appropriate data file (using long sequence data)
+        data_path = f"data/processed/{split}_data_long.pt"
         if not Path(data_path).exists():
             raise FileNotFoundError(f"Data file not found: {data_path}")
         
@@ -31,8 +34,8 @@ class MusicDataset(Dataset):
         data = torch.load(data_path, weights_only=True)
         
         # Extract chord and melody sequences
-        self.chord_sequences = data['chord_sequences']  # Shape: [N] - single chord ID per sequence
-        self.melody_sequences = data['melody_sequences']  # Shape: [N, 32] - melody sequences
+        self.chord_sequences = data['chord_sequences']  # Shape: [N, 512] - chord sequence per time step
+        self.melody_sequences = data['melody_sequences']  # Shape: [N, 512] - melody sequences
         
         print(f"Loading {split} dataset:")
         print(f"  Chord sequences shape: {self.chord_sequences.shape}")
@@ -43,7 +46,8 @@ class MusicDataset(Dataset):
         
         # Validate data
         assert len(self.chord_sequences) == len(self.melody_sequences), "Chord and melody sequences must have same length"
-        assert self.melody_sequences.shape[1] == sequence_length, f"Melody sequences must have length {sequence_length}"
+        assert self.chord_sequences.shape[1] == SEQUENCE_LENGTH, f"Chord sequences must have length {SEQUENCE_LENGTH}"
+        assert self.melody_sequences.shape[1] == SEQUENCE_LENGTH, f"Melody sequences must have length {SEQUENCE_LENGTH}"
         
         print(f"  Chord ID range: [{self.chord_sequences.min()}, {self.chord_sequences.max()}]")
         print(f"  Melody note range: [{self.melody_sequences.min()}, {self.melody_sequences.max()}]")
@@ -55,17 +59,17 @@ class MusicDataset(Dataset):
         """
         Get a single training sample
         Returns:
-            chord_id: single chord ID for the entire sequence
-            melody_sequence: sequence of melody notes [32]
+            chord_sequence: chord sequence [512] - time-aligned with melody
+            melody_sequence: sequence of melody notes [512]
         """
-        chord_id = self.chord_sequences[idx]  # Single chord ID
-        melody_sequence = self.melody_sequences[idx]  # [32] melody notes
+        chord_sequence = self.chord_sequences[idx]  # [512] chord sequence
+        melody_sequence = self.melody_sequences[idx]  # [512] melody notes
         
         # Ensure proper data types
-        chord_id = chord_id.long()
+        chord_sequence = chord_sequence.long()
         melody_sequence = melody_sequence.long()
         
-        return chord_id, melody_sequence
+        return chord_sequence, melody_sequence
 
 def train_model(model, train_loader, val_loader, optimizer, criterion, num_epochs, device, metadata=None):
     best_val_loss = float('inf')
@@ -84,14 +88,14 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
         train_loss = 0
         num_batches = 0
         
-        for batch_idx, (chord_ids, melody_sequences) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')):
+        for batch_idx, (chord_sequences, melody_sequences) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')):
             try:
-                chord_ids = chord_ids.to(device).long()  # [batch_size] - single chord per sequence
-                melody_sequences = melody_sequences.to(device).long()  # [batch_size, 32]
+                chord_sequences = chord_sequences.to(device).long()  # [batch_size, 512] - chord sequence per time step
+                melody_sequences = melody_sequences.to(device).long()  # [batch_size, 512] - melody sequences
                 
                 if batch_idx % 50 == 0:  # Print every 50 batches
-                    print(f"Batch {batch_idx}: chord shape {chord_ids.shape}, melody shape {melody_sequences.shape}")
-                    print(f"  Chord ID range: [{chord_ids.min()}, {chord_ids.max()}]")
+                    print(f"Batch {batch_idx}: chord shape {chord_sequences.shape}, melody shape {melody_sequences.shape}")
+                    print(f"  Chord ID range: [{chord_sequences.min()}, {chord_sequences.max()}]")
                     print(f"  Melody range: [{melody_sequences.min()}, {melody_sequences.max()}]")
                 
                 optimizer.zero_grad()
@@ -99,16 +103,19 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
                 # Use teacher forcing for training
                 if melody_sequences.size(1) > 1:
                     # Input: melody[:-1], Target: melody[1:]
-                    melody_input = melody_sequences[:, :-1].contiguous()  # [batch_size, 31]
-                    melody_target = melody_sequences[:, 1:].contiguous()  # [batch_size, 31]
+                    melody_input = melody_sequences[:, :-1].contiguous()  # [batch_size, 511]
+                    melody_target = melody_sequences[:, 1:].contiguous()  # [batch_size, 511]
                     
-                    # Pass chord_ids and melody_input to model
-                    # chord_ids: [batch_size] - single chord conditioning each sequence
-                    output = model(chord_ids, melody_input)  # Expected output: [batch_size, 31, vocab_size]
+                    # Also truncate chord sequences to match
+                    chord_input = chord_sequences[:, :-1].contiguous()  # [batch_size, 511]
+                    
+                    # Pass chord_sequences and melody_input to model
+                    # chord_input: [batch_size, 511] - chord sequence conditioning each time step
+                    output = model(chord_input, melody_input)  # Expected output: [batch_size, 511, vocab_size]
                     
                     # Flatten for loss calculation
-                    output_flat = output.contiguous().view(-1, output.size(-1))  # [batch_size*31, vocab_size]
-                    target_flat = melody_target.contiguous().view(-1)  # [batch_size*31]
+                    output_flat = output.contiguous().view(-1, output.size(-1))  # [batch_size*511, vocab_size]
+                    target_flat = melody_target.contiguous().view(-1)  # [batch_size*511]
                     
                     # Calculate loss
                     loss = criterion(output_flat, target_flat)
@@ -142,16 +149,19 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
         num_val_batches = 0
         
         with torch.no_grad():
-            for chord_ids, melody_sequences in val_loader:
+            for chord_sequences, melody_sequences in val_loader:
                 try:
-                    chord_ids = chord_ids.to(device).long()
+                    chord_sequences = chord_sequences.to(device).long()
                     melody_sequences = melody_sequences.to(device).long()
                     
                     if melody_sequences.size(1) > 1:
                         melody_input = melody_sequences[:, :-1].contiguous()
                         melody_target = melody_sequences[:, 1:].contiguous()
                         
-                        output = model(chord_ids, melody_input)
+                        # Also truncate chord sequences for validation
+                        chord_input = chord_sequences[:, :-1].contiguous()
+                        
+                        output = model(chord_input, melody_input)
                         
                         # Flatten for loss calculation
                         output_flat = output.contiguous().view(-1, output.size(-1))
@@ -231,45 +241,48 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, num_epoch
     plt.close()
 
 def main():
-    # Set parameters
-    BATCH_SIZE = 8  # Increased batch size since data loading is now simpler
-    SEQUENCE_LENGTH = 32
-    NUM_EPOCHS = 100
-    LEARNING_RATE = 0.0001
+    # Use config variables
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     print(f"Using device: {DEVICE}")
+    print(f"Configuration: {SEQUENCE_LENGTH} step sequences, batch size {BATCH_SIZE}")
     
     # Create necessary directories
     Path("models").mkdir(exist_ok=True)
     Path("output/training_samples").mkdir(parents=True, exist_ok=True)
     
-    # Load metadata to get vocabulary information
+    # Load metadata to get vocabulary information (use long sequence metadata)
     try:
-        metadata = torch.load('data/processed/metadata.pt', weights_only=True)
+        metadata = torch.load('data/processed/metadata_long.pt', weights_only=True)
         num_chords = metadata['num_chords']
         print(f"Number of chord types: {num_chords}")
         print(f"Average chord confidence: {metadata['stats']['avg_chord_confidence']:.3f}")
+        print(f"Processed sequences: {metadata['stats']['processed_sequences']}")
+        print(f"Train size: {metadata['stats']['train_size']}")
+        print(f"Test size: {metadata['stats']['test_size']}")
     except FileNotFoundError:
-        print("Warning: metadata.pt not found, using default values")
-        num_chords = 49  # Default based on ChordMapper
+        print("Warning: metadata_long.pt not found, using default values")
+        num_chords = CHORD_VOCAB_SIZE  # Use config value
         metadata = None
     
     # Create datasets and data loaders
     try:
-        train_dataset = MusicDataset(split='train', sequence_length=SEQUENCE_LENGTH)
-        val_dataset = MusicDataset(split='test', sequence_length=SEQUENCE_LENGTH)
+        train_dataset = MusicDataset(split='train')
+        val_dataset = MusicDataset(split='test')
         
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
         
-        # Create model with appropriate vocab size
-        # vocab_size=128 for MIDI notes, chord_vocab_size for chord conditioning
+        # Create model using config values
         model = ChordToMelodyTransformer(
-            vocab_size=128, 
-            chord_vocab_size=num_chords,  # Number of chord types
-            d_model=256, 
-            nhead=8
+            vocab_size=VOCAB_SIZE, 
+            chord_vocab_size=num_chords,
+            d_model=D_MODEL, 
+            nhead=NHEAD,
+            num_encoder_layers=NUM_ENCODER_LAYERS,
+            num_decoder_layers=NUM_DECODER_LAYERS,
+            dim_feedforward=DIM_FEEDFORWARD,
+            dropout=DROPOUT
         ).to(DEVICE)
         
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)

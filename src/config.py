@@ -1,4 +1,3 @@
-
 """
 Global configuration for the chord-to-melody model
 """
@@ -6,7 +5,7 @@ Global configuration for the chord-to-melody model
 # Sequence parameters
 SEQUENCE_LENGTH = 512  # Length of melody sequences (previously 32)
 BAR_LENGTH = 16       # Length of one musical bar in time steps
-STEP_SIZE = 16        # Step size for sliding window when creating sequences
+STEP_SIZE = 256       # Step size for sliding window (50% overlap, much better than 96.9%)
 
 # Model parameters
 VOCAB_SIZE = 128      # MIDI note range (0-127)

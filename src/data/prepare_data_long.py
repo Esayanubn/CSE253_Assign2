@@ -20,12 +20,16 @@ def process_lpd_files_long():
         print("Error: LPD dataset not found. Please download it first.")
         return
     
+    # Configuration
+    chord_segment_length = 4  # How many time steps per chord segment
+    
     # Initialize chord mapper
     chord_mapper = ChordMapper()
     print(f"Initialized ChordMapper with {chord_mapper.num_chords} chord types")
     print(f"Using sequence length: {SEQUENCE_LENGTH} steps")
     print(f"Bar length: {BAR_LENGTH} steps")
     print(f"Step size: {STEP_SIZE} steps")
+    print(f"Chord segment length: {chord_segment_length} steps")
     
     # Statistics
     melody_sequences = []
@@ -123,6 +127,11 @@ def process_lpd_files_long():
                     else:
                         melody_seq.append(0)
 
+                # Check if melody is all zeros (skip empty melodies)
+                if all(note == 0 for note in melody_seq):
+                    sequence_skip_reasons['no_notes'] += 1
+                    continue
+
                 # Check for issues
                 max_melody_note = max(melody_seq)
                 max_sequence_note = np.max(sequence_notes)
@@ -135,36 +144,44 @@ def process_lpd_files_long():
                     sequence_skip_reasons['binarization_error'] += 1
                     continue
                 
-                # Apply chord mapping: average over multiple bars to get a representative chord
-                # Divide the sequence into bars and get the most representative chord
-                bar_chord_votes = []
+                # Apply chord mapping for each time step or small segments
+                # We'll use 4-step segments to balance granularity and computational efficiency
+                chord_seq = []
+                chord_confidences_for_seq = []
                 
-                for bar_start in range(0, SEQUENCE_LENGTH, BAR_LENGTH):
-                    bar_end = min(bar_start + BAR_LENGTH, SEQUENCE_LENGTH)
-                    bar_notes = sequence_notes[bar_start:bar_end]
+                for seg_start in range(0, SEQUENCE_LENGTH, chord_segment_length):
+                    seg_end = min(seg_start + chord_segment_length, SEQUENCE_LENGTH)
+                    segment_notes = sequence_notes[seg_start:seg_end]
                     
-                    if bar_notes.any():
-                        # Average the multi-hot vector over time to get chord for this bar
-                        avg_multihot = np.mean(bar_notes, axis=0)  # Shape: [128]
+                    if segment_notes.any():
+                        # Average the multi-hot vector over time to get chord for this segment
+                        avg_multihot = np.mean(segment_notes, axis=0)  # Shape: [128]
                         chord_name, chord_id, confidence = chord_mapper.map_multihot_to_chord(avg_multihot)
                         
-                        if confidence > 0.3:  # Only count confident chord detections
-                            bar_chord_votes.append((chord_id, confidence))
+                        # Repeat chord_id for each time step in this segment
+                        segment_length = seg_end - seg_start
+                        chord_seq.extend([chord_id] * segment_length)
+                        chord_confidences_for_seq.extend([confidence] * segment_length)
+                    else:
+                        # No notes in this segment, use "no chord" (ID 0 or a special ID)
+                        segment_length = seg_end - seg_start
+                        chord_seq.extend([0] * segment_length)  # Assuming 0 is a valid "no chord" ID
+                        chord_confidences_for_seq.extend([0.0] * segment_length)
                 
-                # Choose the most confident chord from all bars
-                if not bar_chord_votes:
+                # Ensure chord sequence has the same length as melody sequence
+                assert len(chord_seq) == SEQUENCE_LENGTH, f"Chord seq length {len(chord_seq)} != melody length {SEQUENCE_LENGTH}"
+                
+                # Check average chord confidence for the entire sequence
+                avg_confidence = np.mean([c for c in chord_confidences_for_seq if c > 0])
+                if len([c for c in chord_confidences_for_seq if c > 0]) == 0 or avg_confidence < 0.2:
                     sequence_skip_reasons['chord_confidence_low'] += 1
                     continue
                 
-                # Get the chord with highest confidence
-                best_chord_id, best_confidence = max(bar_chord_votes, key=lambda x: x[1])
-                chord_name = chord_mapper.id_to_chord[best_chord_id]
-                
                 # Store the data
                 melody_sequences.append(melody_seq)
-                chord_sequences.append(best_chord_id)
-                chord_names_list.append(chord_name)
-                chord_confidences.append(best_confidence)
+                chord_sequences.append(chord_seq)  # Now same length as melody
+                chord_names_list.append(f"avg_conf_{avg_confidence:.3f}")  # Store average confidence
+                chord_confidences.append(avg_confidence)
                 processed_files += 1
                 file_sequences_added += 1
                 sequence_skip_reasons['successful'] += 1
@@ -200,14 +217,21 @@ def process_lpd_files_long():
 
     # Convert to tensors
     melody_tensor = torch.tensor(melody_sequences, dtype=torch.long)  # [N, 512]
-    chord_tensor = torch.tensor(chord_sequences, dtype=torch.long)    # [N] - single chord per sequence
+    chord_tensor = torch.tensor(chord_sequences, dtype=torch.long)    # [N, 512] - chord sequence matching melody length
     
-    # Print chord distribution
+    # Print chord distribution (flatten all chord sequences to get overall distribution)
     print(f"\n🎵 Chord Distribution:")
-    unique_chords, counts = np.unique(chord_sequences, return_counts=True)
-    for chord_id, count in zip(unique_chords, counts):
-        chord_name = chord_mapper.id_to_chord[chord_id]
-        print(f"  {chord_name}: {count} ({count/len(chord_sequences)*100:.1f}%)")
+    all_chords = np.array(chord_sequences).flatten()
+    unique_chords, counts = np.unique(all_chords, return_counts=True)
+    
+    # Sort by count and show top chords
+    sorted_indices = np.argsort(counts)[::-1]
+    for i, idx in enumerate(sorted_indices[:15]):
+        chord_id = unique_chords[idx]
+        chord_name = chord_mapper.id_to_chord.get(chord_id, f"Unknown_{chord_id}")
+        count = counts[idx]
+        percentage = count / len(all_chords) * 100
+        print(f"  {chord_name}: {count} ({percentage:.1f}%)")
 
     # Create train/test split (80/20)
     num_samples = len(melody_sequences)
@@ -280,6 +304,8 @@ def process_lpd_files_long():
     print(f"  🎵 Test chord sequences: {test_chord.shape}")
     print(f"\n⏱️  Sequence duration: {SEQUENCE_LENGTH * 0.125:.1f} seconds per sequence")
     print(f"🎵 Musical bars: {SEQUENCE_LENGTH // BAR_LENGTH} bars per sequence")
+    print(f"🎶 Chord granularity: every {chord_segment_length} time steps")
+    print(f"📈 Chord-to-time ratio: {SEQUENCE_LENGTH // chord_segment_length} chord segments per sequence")
 
 if __name__ == "__main__":
     process_lpd_files_long() 

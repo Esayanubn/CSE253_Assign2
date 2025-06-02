@@ -1,6 +1,12 @@
 import torch
 import torch.nn as nn
 import math
+import sys
+import os
+
+# Add parent directory to path for config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import *
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -20,15 +26,21 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class ChordToMelodyTransformer(nn.Module):
-    def __init__(self, vocab_size=128, chord_vocab_size=49, d_model=256, nhead=8, 
-                 num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, 
-                 dropout=0.1, batch_first=True):
+    def __init__(self, vocab_size=VOCAB_SIZE, chord_vocab_size=CHORD_VOCAB_SIZE, 
+                 d_model=D_MODEL, nhead=NHEAD, 
+                 num_encoder_layers=NUM_ENCODER_LAYERS, num_decoder_layers=NUM_DECODER_LAYERS, 
+                 dim_feedforward=DIM_FEEDFORWARD, dropout=DROPOUT, batch_first=True):
         super().__init__()
+        
+        # Store dimensions
+        self.d_model = d_model
+        self.vocab_size = vocab_size
+        self.chord_vocab_size = chord_vocab_size
         
         # Separate embeddings for melody notes and chords
         self.melody_embedding = nn.Embedding(vocab_size, d_model)
         self.chord_embedding = nn.Embedding(chord_vocab_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.pos_encoder = PositionalEncoding(d_model, dropout, max_len=SEQUENCE_LENGTH + 100)
         
         # Encoder processes chord information
         encoder_layer = nn.TransformerEncoderLayer(
@@ -52,30 +64,25 @@ class ChordToMelodyTransformer(nn.Module):
         
         self.output_layer = nn.Linear(d_model, vocab_size)
         
-    def forward(self, chord_ids, melody_sequence=None):
+    def forward(self, chord_sequences, melody_sequence=None):
         """
         Args:
-            chord_ids: [batch_size] - single chord ID per sequence
+            chord_sequences: [batch_size, seq_len] - chord sequence (time-aligned with melody)
             melody_sequence: [batch_size, seq_len] - melody sequence (for training)
         Returns:
             output: [batch_size, seq_len, vocab_size] - predicted melody logits
         """
-        batch_size = chord_ids.size(0)
+        batch_size, seq_len = chord_sequences.size()
         
-        # Embed chord IDs and expand to create conditioning
-        chord_embedded = self.chord_embedding(chord_ids)  # [batch_size, d_model]
+        # Embed chord sequences
+        chord_embedded = self.chord_embedding(chord_sequences)  # [batch_size, seq_len, d_model]
+        chord_embedded = self.pos_encoder(chord_embedded)
+        
+        # Process chord information through encoder
+        memory = self.transformer_encoder(chord_embedded)  # [batch_size, seq_len, d_model]
         
         if melody_sequence is not None:
             # Training mode
-            seq_len = melody_sequence.size(1)
-            
-            # Expand chord embedding to sequence length for encoder input
-            chord_sequence = chord_embedded.unsqueeze(1).repeat(1, seq_len, 1)  # [batch_size, seq_len, d_model]
-            chord_sequence = self.pos_encoder(chord_sequence)
-            
-            # Process chord information through encoder
-            memory = self.transformer_encoder(chord_sequence)  # [batch_size, seq_len, d_model]
-            
             # Embed melody sequence
             melody_embedded = self.melody_embedding(melody_sequence)  # [batch_size, seq_len, d_model]
             melody_embedded = self.pos_encoder(melody_embedded)
@@ -90,12 +97,8 @@ class ChordToMelodyTransformer(nn.Module):
                 tgt_mask=tgt_mask
             )
         else:
-            # Generation mode - create a simple memory from chord
-            seq_len = 32  # Default sequence length for generation
-            chord_sequence = chord_embedded.unsqueeze(1).repeat(1, seq_len, 1)
-            chord_sequence = self.pos_encoder(chord_sequence)
-            memory = self.transformer_encoder(chord_sequence)
-            output = memory  # Will be processed by output layer
+            # Generation mode - use memory directly (will be processed by output layer)
+            output = memory
         
         # Project to vocabulary
         output = self.output_layer(output)  # [batch_size, seq_len, vocab_size]
@@ -108,12 +111,11 @@ class ChordToMelodyTransformer(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
     
-    def generate_melody(self, chord_id, max_length=32, temperature=1.0):
+    def generate_melody(self, chord_sequence, temperature=1.0):
         """
-        Generate melody given a chord ID
+        Generate melody given a chord sequence
         Args:
-            chord_id: int - single chord ID
-            max_length: int - maximum melody length
+            chord_sequence: tensor [seq_len] - chord sequence
             temperature: float - sampling temperature
         Returns:
             melody: list - generated melody sequence
@@ -121,19 +123,24 @@ class ChordToMelodyTransformer(nn.Module):
         self.eval()
         device = next(self.parameters()).device
         
-        # Convert chord_id to tensor
-        chord_ids = torch.tensor([chord_id], dtype=torch.long, device=device)
+        # Ensure chord_sequence is 2D
+        if chord_sequence.dim() == 1:
+            chord_sequence = chord_sequence.unsqueeze(0)  # [1, seq_len]
+        
+        chord_sequence = chord_sequence.to(device)
+        seq_len = chord_sequence.size(1)
         
         # Initialize melody with start token (0)
-        melody = [0]
+        melody = torch.zeros(1, seq_len, dtype=torch.long, device=device)
         
         with torch.no_grad():
-            for _ in range(max_length - 1):
-                # Convert current melody to tensor
-                melody_tensor = torch.tensor([melody], dtype=torch.long, device=device)
+            for t in range(1, seq_len):
+                # Get current partial melody
+                current_melody = melody[:, :t]  # [1, t]
+                current_chords = chord_sequence[:, :t]  # [1, t]
                 
-                # Get predictions
-                output = self.forward(chord_ids, melody_tensor)  # [1, seq_len, vocab_size]
+                # Get predictions for current position
+                output = self.forward(current_chords, current_melody)  # [1, t, vocab_size]
                 
                 # Get last prediction and apply temperature
                 logits = output[0, -1, :] / temperature  # [vocab_size]
@@ -141,6 +148,6 @@ class ChordToMelodyTransformer(nn.Module):
                 
                 # Sample next note
                 next_note = torch.multinomial(probs, 1).item()
-                melody.append(next_note)
+                melody[0, t] = next_note
         
-        return melody[1:]  # Remove start token 
+        return melody[0].cpu().tolist()  # Return as list 
